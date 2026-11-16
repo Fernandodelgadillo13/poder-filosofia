@@ -1,0 +1,69 @@
+rules_version = '2';
+
+// Reglas de seguridad de Firestore para el curso "El poder en la filosofía política".
+// ⚠ Cambia el correo de la función esDocente() por el tuyo (y el de otros docentes).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function autenticado() { return request.auth != null; }
+
+    function esDocente() {
+      return autenticado()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'fdelgadillo@colegioquillotaterranova.cl'
+        ];
+    }
+
+    // Los IDs de entregas y calificaciones tienen la forma  {uid}_{claseId}
+    function idPropio(id) { return autenticado() && id.matches(request.auth.uid + '_c[0-9]+'); }
+
+    function claseAbierta(claseId) {
+      return claseId in get(/databases/$(database)/documents/config/curso).data.clasesAbiertas;
+    }
+
+    // Configuración general (clases abiertas)
+    match /config/{docId} {
+      allow read: if autenticado();
+      allow write: if esDocente();
+    }
+
+    // Perfil de cada estudiante
+    match /estudiantes/{uid} {
+      allow read: if (autenticado() && request.auth.uid == uid) || esDocente();
+      allow create, update: if autenticado() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['nombre', 'seccion', 'email', 'actualizado'])
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.nombre is string && request.resource.data.nombre.size() < 120
+        && request.resource.data.seccion is string && request.resource.data.seccion.size() < 30;
+      allow delete: if esDocente();
+    }
+
+    // Respuestas de los estudiantes: se envían UNA vez y no se pueden editar
+    match /entregas/{id} {
+      allow get: if esDocente() || idPropio(id);
+      allow list: if esDocente() || (autenticado() && resource.data.uid == request.auth.uid);
+      allow create: if idPropio(id)
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'claseId', 'respuestas', 'enviadoEn'])
+        && request.resource.data.uid == request.auth.uid
+        && id == request.auth.uid + '_' + request.resource.data.claseId
+        && request.resource.data.enviadoEn == request.time
+        && request.resource.data.respuestas is map
+        && claseAbierta(request.resource.data.claseId);
+      allow update: if false;
+      allow delete: if esDocente();
+    }
+
+    // Calificaciones: solo el docente escribe; el estudiante lee las suyas
+    match /calificaciones/{id} {
+      allow get: if esDocente() || idPropio(id);
+      allow list: if esDocente() || (autenticado() && resource.data.uid == request.auth.uid);
+      allow write: if esDocente();
+    }
+
+    // Respuestas correctas de selección múltiple: solo docentes
+    match /claves/{claseId} {
+      allow read, write: if esDocente();
+    }
+  }
+}
